@@ -106,11 +106,7 @@ async function uploadResumableWithProgress(
     let settled = false;
     let heartbeatPending = false;
     let heartbeatFailed = false;
-    let heartbeatTimer: number | undefined;
-
-    const finish = () => {
-      if (heartbeatTimer !== undefined) window.clearInterval(heartbeatTimer);
-    };
+    const finish = () => window.clearInterval(heartbeatTimer);
 
     const upload = new tus.Upload(file, {
       endpoint: `${storageOrigin}/storage/v1/upload/resumable`,
@@ -147,7 +143,7 @@ async function uploadResumableWithProgress(
       },
     });
 
-    heartbeatTimer = window.setInterval(async () => {
+    const heartbeatTimer = window.setInterval(async () => {
       if (heartbeatPending || settled) return;
       heartbeatPending = true;
       try {
