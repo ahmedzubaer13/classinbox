@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
-import { readCreatorSecret, newCreatorSecret, creatorIdHash, setCreatorCookie } from "@/lib/auth";
+import { readCreatorSecret, newCreatorSecret, creatorIdHash, ownerHashForSession, setCreatorCookie } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { newPublicToken, cleanText } from "@/lib/validation";
 import type { Submission } from "@/lib/types";
