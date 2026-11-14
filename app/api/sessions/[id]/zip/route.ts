@@ -20,6 +20,15 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
     return NextResponse.json({ error: "Session not found." }, { status: 404 });
   }
 
+  const { data: touched } = await db.from("sessions")
+    .update({ last_activity_at: new Date().toISOString() })
+    .eq("id", id)
+    .eq("owner_key_hash", ownerHashForSession(creatorSecret, id))
+    .is("cleanup_started_at", null)
+    .gt("last_activity_at", new Date(Date.now() - 30 * 60_000).toISOString())
+    .select("id").maybeSingle();
+  if (!touched) return NextResponse.json({ error: "Session not found or expired." }, { status: 404 });
+
   const { data: submissions, error } = await db.from("submissions")
     .select("*").eq("session_id", id).order("student_id", { ascending: true });
   if (error) return NextResponse.json({ error: "Could not load files." }, { status: 500 });
