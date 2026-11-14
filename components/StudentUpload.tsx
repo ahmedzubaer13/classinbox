@@ -1,0 +1,131 @@
+"use client";
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import { CheckCircle2, File, FilePlus2, Inbox, UploadCloud, X, AlertCircle } from "lucide-react";
+import { formatBytes } from "@/lib/types";
+
+type UploadItem = { id: string; file: File; progress: number; status: "queued" | "uploading" | "done" | "error"; error?: string };
+
+function uploadWithProgress(url: string, apiKey: string, file: File, onProgress: (n: number) => void) {
+  return new Promise<void>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url);
+    xhr.setRequestHeader("apikey", apiKey);
+    xhr.setRequestHeader("x-upsert", "false");
+    xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
+    };
+    xhr.onload = () => xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(xhr.responseText || `Storage upload failed (${xhr.status}).`));
+    xhr.onerror = () => reject(new Error("Network error. Check your connection and retry this file."));
+    xhr.onabort = () => reject(new Error("Upload cancelled."));
+    xhr.send(file);
+  });
+}
+
+export default function StudentUpload({ token }: { token: string }) {
+  const [studentName, setStudentName] = useState("");
+  const [studentId, setStudentId] = useState("");
+  const [items, setItems] = useState<UploadItem[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [sessionTitle, setSessionTitle] = useState("ClassInbox submission");
+  const [closed, setClosed] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+  const [maxFilesAllowed, setMaxFilesAllowed] = useState(10);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/public/session/${encodeURIComponent(token)}`, { cache: "no-store" })
+      .then(async (res) => {
+        const data = await res.json();
+        if (cancelled) return;
+        if (!res.ok) { setClosed(true); setMessage(data.error || "This session is unavailable."); return; }
+        setSessionTitle(data.title);
+        setMaxFilesAllowed(data.maxFiles || 10);
+        setClosed(!data.isActive);
+      })
+      .catch(() => { if (!cancelled) { setClosed(true); setMessage("Could not verify this session. Check your connection."); } });
+    return () => { cancelled = true; };
+  }, [token]);
+  const totalProgress = useMemo(() => items.length ? Math.round(items.reduce((sum, item) => sum + item.progress, 0) / items.length) : 0, [items]);
+
+  function updateItem(id: string, patch: Partial<UploadItem>) {
+    setItems((prev) => prev.map((item) => item.id === id ? { ...item, ...patch } : item));
+  }
+  function addFiles(files: FileList | null) {
+    if (!files) return;
+    const incoming = Array.from(files);
+    setItems((prev) => {
+      const remaining = Math.max(0, maxFilesAllowed - prev.length);
+      if (incoming.length > remaining) setMessage(`You can submit up to ${maxFilesAllowed} files in one submission.`);
+      return [...prev, ...incoming.slice(0, remaining).map((file) => ({ id: crypto.randomUUID(), file, progress: 0, status: "queued" as const }))];
+    });
+    setMessage("");
+  }
+  function removeFile(id: string) {
+    setItems((prev) => prev.filter((item) => item.id !== id));
+  }
+
+  async function submit() {
+    if (!studentName.trim() || !studentId.trim()) { setMessage("Enter your name and student ID first."); return; }
+    if (!items.length) { setMessage("Choose at least one file to upload."); return; }
+    if (!supabaseUrl || !anonKey) { setMessage("The upload service is not configured. Contact your teacher."); return; }
+    setBusy(true); setMessage("");
+    const pending = items.filter((item) => item.status !== "done");
+    for (const item of pending) {
+      updateItem(item.id, { status: "uploading", progress: 0, error: undefined });
+      try {
+        const initRes = await fetch("/api/upload/init", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token, filename: item.file.name, size: item.file.size, mimeType: item.file.type, batchSize: pending.length }) });
+        const init = await initRes.json();
+        if (!initRes.ok) throw new Error(init.error || "Could not prepare upload.");
+        setMaxFilesAllowed(init.maxFiles || 10);
+        const objectUrl = `${supabaseUrl.replace(/\/$/, "")}/storage/v1/object/upload/sign/${encodeURIComponent(init.bucket)}/${init.path.split("/").map(encodeURIComponent).join("/")}?token=${encodeURIComponent(init.signedToken)}`;
+        await uploadWithProgress(objectUrl, anonKey, item.file, (progress) => updateItem(item.id, { progress }));
+        const completeRes = await fetch("/api/upload/complete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token, path: init.path, filename: item.file.name, size: item.file.size, mimeType: item.file.type, studentName, studentId }) });
+        const complete = await completeRes.json();
+        if (!completeRes.ok) throw new Error(complete.error || "Could not confirm submission.");
+        updateItem(item.id, { status: "done", progress: 100 });
+      } catch (err) {
+        updateItem(item.id, { status: "error", error: err instanceof Error ? err.message : "Upload failed." });
+      }
+    }
+    setBusy(false);
+    setMessage("Upload process finished. Check each file's status below.");
+  }
+
+  return (
+    <main className="student-page">
+      <div className="brand" style={{ justifyContent: "center" }}><span className="brand-mark"><Inbox size={21}/></span>ClassInbox</div>
+      <section className="student-card">
+        <span className="eyebrow">CLASSROOM SUBMISSION</span>
+        <h1>{sessionTitle}</h1>
+        <p>Enter your details, choose your files, and submit them to your teacher. Keep this page open until uploads finish.</p>
+        {closed ? <div className="empty"><AlertCircle size={26}/><p>This session is closed and is no longer accepting submissions.</p></div> : <>
+          <div className="field"><label htmlFor="student-name">YOUR NAME</label><input id="student-name" value={studentName} onChange={(e) => setStudentName(e.target.value)} placeholder="Enter your full name" disabled={busy}/></div>
+          <div className="field"><label htmlFor="student-id">STUDENT ID</label><input id="student-id" value={studentId} onChange={(e) => setStudentId(e.target.value)} placeholder="Enter your student ID" disabled={busy}/></div>
+          <div className="dropzone">
+            <UploadCloud size={30} color="#71934f"/>
+            <p style={{ fontWeight: 700, fontSize: 13, margin: "9px 0 5px" }}>Choose files to submit</p>
+            <p className="small muted">Select up to {maxFilesAllowed} files. Maximum 50 MB per file.</p>
+            <input ref={inputRef} type="file" multiple onChange={(e) => addFiles(e.target.files)} disabled={busy}/>
+          </div>
+          {items.length > 0 && <div style={{ margin: "18px 0" }}>
+            <div className="table-head"><strong style={{ fontSize: 12 }}>{items.length} selected file(s)</strong><span className="small muted">{totalProgress}% overall</span></div>
+            {items.map((item) => <div className="progress-item" key={item.id}>
+              <div className="progress-top"><span style={{ display: "flex", alignItems: "center", gap: 6 }}><File size={13}/>{item.file.name} <span className="muted">({formatBytes(item.file.size)})</span></span><span>{item.status === "done" ? <CheckCircle2 size={15} color="#4d9348"/> : item.status === "error" ? <AlertCircle size={15} color="#b4473e"/> : `${item.progress}%`}</span></div>
+              <div className="progress-track"><div className="progress-fill" style={{ width: `${item.progress}%`, background: item.status === "error" ? "#c45a50" : undefined }}/></div>
+              {item.error && <p className="error">{item.error}</p>}
+              {!busy && item.status !== "done" && <button className="small muted" style={{ border: 0, background: "none", padding: "5px 0" }} onClick={() => removeFile(item.id)}>Remove</button>}
+            </div>)}
+          </div>}
+          {message && <div className="toast">{message}</div>}
+          <button className="button button-dark" style={{ width: "100%", marginTop: 8 }} onClick={() => void submit()} disabled={busy || items.length === 0}><UploadCloud size={16}/>{busy ? "Uploading files…" : "Submit files"}</button>
+          <p className="small muted" style={{ textAlign: "center", marginTop: 13 }}>Your files are sent securely to your teacher&apos;s submission inbox.</p>
+        </>}
+      </section>
+      <p className="small muted" style={{ textAlign: "center" }}>Powered by ClassInbox · Scan. Upload. Done.</p>
+    </main>
+  );
+}
