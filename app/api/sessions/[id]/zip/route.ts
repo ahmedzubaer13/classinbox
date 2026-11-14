@@ -7,7 +7,7 @@ export const runtime = "nodejs";
 
 export async function GET(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   const creatorSecret = readCreatorSecret(request);
-  if (!creatorSecret) return NextResponse.json({ error: "Session not found." }, { ...{ status: 404 }, headers: { "Cache-Control": "no-store" } }, { headers: { "Cache-Control": "no-store" } });
+  if (!creatorSecret) return NextResponse.json({ error: "Session not found." }, { status: 404, headers: { "Cache-Control": "no-store" } });
 
   const { id } = await context.params;
   const db = supabaseAdmin();
@@ -17,7 +17,7 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
 
   if (!session || session.cleanup_started_at ||
       session.owner_key_hash !== ownerHashForSession(creatorSecret, id)) {
-    return NextResponse.json({ error: "Session not found." }, { ...{ status: 404 }, headers: { "Cache-Control": "no-store" } }, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json({ error: "Session not found." }, { status: 404, headers: { "Cache-Control": "no-store" } });
   }
 
   const { data: touched } = await db.from("sessions")
@@ -27,12 +27,12 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
     .is("cleanup_started_at", null)
     .gt("last_activity_at", new Date(Date.now() - 30 * 60_000).toISOString())
     .select("id").maybeSingle();
-  if (!touched) return NextResponse.json({ error: "Session not found or expired." }, { ...{ status: 404 }, headers: { "Cache-Control": "no-store" } }, { headers: { "Cache-Control": "no-store" } });
+  if (!touched) return NextResponse.json({ error: "Session not found or expired." }, { status: 404, headers: { "Cache-Control": "no-store" } });
 
   const { data: submissions, error } = await db.from("submissions")
     .select("*").eq("session_id", id).order("student_id", { ascending: true });
-  if (error) return NextResponse.json({ error: "Could not load files." }, { ...{ status: 500 }, headers: { "Cache-Control": "no-store" } }, { headers: { "Cache-Control": "no-store" } });
-  if (!submissions?.length) return NextResponse.json({ error: "There are no files to download yet." }, { ...{ status: 404 }, headers: { "Cache-Control": "no-store" } }, { headers: { "Cache-Control": "no-store" } });
+  if (error) return NextResponse.json({ error: "Could not load files." }, { status: 500, headers: { "Cache-Control": "no-store" } });
+  if (!submissions?.length) return NextResponse.json({ error: "There are no files to download yet." }, { status: 404, headers: { "Cache-Control": "no-store" } });
 
   const safeTitle = session.title.replace(/[^a-z0-9-_]+/gi, "_").slice(0, 60) || "classinbox";
   const archive = archiver("zip", { zlib: { level: 5 } });
