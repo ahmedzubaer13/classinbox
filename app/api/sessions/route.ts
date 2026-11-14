@@ -34,7 +34,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => ({}));
   const title = cleanText(body.title, 100);
-  if (title.length < 2) return NextResponse.json({ error: "Session title must be at least 2 characters." }, { status: 400 });
+  if (title.length < 2) return NextResponse.json({ error: "Session title must be at least 2 characters." }, { status: 400, headers: { "Cache-Control": "no-store" } });
 
   const creatorSecret = readCreatorSecret(request) ?? newCreatorSecret();
   const id = randomUUID();
@@ -51,9 +51,9 @@ export async function POST(request: NextRequest) {
     is_active: true,
   }).select("id,title,public_token,is_active,created_at,closed_at,last_activity_at,cleanup_started_at").single();
 
-  if (error || !data) return NextResponse.json({ error: "Could not create the session." }, { status: 500 });
+  if (error || !data) return NextResponse.json({ error: "Could not create the session." }, { status: 500, headers: { "Cache-Control": "no-store" } });
 
-  const response = NextResponse.json({ session: data });
+  const response = NextResponse.json({ session: data }, { headers: { "Cache-Control": "no-store" } });
   if (!readCreatorSecret(request)) setCreatorCookie(response, creatorSecret);
   return response;
 }
