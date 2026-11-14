@@ -1,14 +1,52 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, File, FilePlus2, Inbox, UploadCloud, X, AlertCircle } from "lucide-react";
+import { CheckCircle2, File, Inbox, UploadCloud, AlertCircle } from "lucide-react";
 import { formatBytes } from "@/lib/types";
 
 type UploadItem = { id: string; file: File; progress: number; status: "queued" | "uploading" | "done" | "error"; error?: string };
 
-function uploadWithProgress(url: string, apiKey: string, file: File, onProgress: (n: number) => void) {
+async function uploadWithProgress(
+  url: string,
+  apiKey: string,
+  file: File,
+  token: string,
+  path: string,
+  onProgress: (n: number) => void,
+) {
+  const firstHeartbeat = await fetch("/api/upload/heartbeat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token, path }),
+  });
+  if (!firstHeartbeat.ok) throw new Error("This session has expired. Please ask your teacher for a new QR code.");
+
   return new Promise<void>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    let heartbeatPending = false;
+    let heartbeatFailed = false;
+    const heartbeatTimer = window.setInterval(async () => {
+      if (heartbeatPending || xhr.readyState === XMLHttpRequest.DONE) return;
+      heartbeatPending = true;
+      try {
+        const response = await fetch("/api/upload/heartbeat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token, path }),
+        });
+        if (!response.ok) {
+          heartbeatFailed = true;
+          xhr.abort();
+        }
+      } catch {
+        heartbeatFailed = true;
+        xhr.abort();
+      } finally {
+        heartbeatPending = false;
+      }
+    }, 45_000);
+
+    const finish = () => window.clearInterval(heartbeatTimer);
     xhr.open("PUT", url);
     xhr.setRequestHeader("apikey", apiKey);
     xhr.setRequestHeader("x-upsert", "false");
@@ -16,9 +54,19 @@ function uploadWithProgress(url: string, apiKey: string, file: File, onProgress:
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
     };
-    xhr.onload = () => xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(xhr.responseText || `Storage upload failed (${xhr.status}).`));
-    xhr.onerror = () => reject(new Error("Network error. Check your connection and retry this file."));
-    xhr.onabort = () => reject(new Error("Upload cancelled."));
+    xhr.onload = () => {
+      finish();
+      if (heartbeatFailed) return reject(new Error("The session expired during upload. Please ask your teacher for a new QR code."));
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      else reject(new Error(xhr.responseText || `Storage upload failed (${xhr.status}).`));
+    };
+    xhr.onerror = () => { finish(); reject(new Error("Network error. Check your connection and retry this file.")); };
+    xhr.onabort = () => {
+      finish();
+      reject(new Error(heartbeatFailed
+        ? "The session expired during upload. Please ask your teacher for a new QR code."
+        : "Upload cancelled."));
+    };
     xhr.send(file);
   });
 }
@@ -76,18 +124,23 @@ export default function StudentUpload({ token }: { token: string }) {
     const pending = items.filter((item) => item.status !== "done");
     for (const item of pending) {
       updateItem(item.id, { status: "uploading", progress: 0, error: undefined });
+      let uploadPath = "";
       try {
         const initRes = await fetch("/api/upload/init", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token, filename: item.file.name, size: item.file.size, mimeType: item.file.type, batchSize: pending.length }) });
         const init = await initRes.json();
         if (!initRes.ok) throw new Error(init.error || "Could not prepare upload.");
         setMaxFilesAllowed(init.maxFiles || 10);
+        uploadPath = init.path;
         const objectUrl = `${supabaseUrl.replace(/\/$/, "")}/storage/v1/object/upload/sign/${encodeURIComponent(init.bucket)}/${init.path.split("/").map(encodeURIComponent).join("/")}?token=${encodeURIComponent(init.signedToken)}`;
-        await uploadWithProgress(objectUrl, anonKey, item.file, (progress) => updateItem(item.id, { progress }));
+        await uploadWithProgress(objectUrl, anonKey, item.file, token, init.path, (progress) => updateItem(item.id, { progress }));
         const completeRes = await fetch("/api/upload/complete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token, path: init.path, filename: item.file.name, size: item.file.size, mimeType: item.file.type, studentName, studentId }) });
         const complete = await completeRes.json();
         if (!completeRes.ok) throw new Error(complete.error || "Could not confirm submission.");
         updateItem(item.id, { status: "done", progress: 100 });
       } catch (err) {
+        if (uploadPath) {
+          await fetch("/api/upload/fail", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token, path: uploadPath }) }).catch(() => undefined);
+        }
         updateItem(item.id, { status: "error", error: err instanceof Error ? err.message : "Upload failed." });
       }
     }
