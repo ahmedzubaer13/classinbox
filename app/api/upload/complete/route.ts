@@ -12,11 +12,11 @@ export async function POST(request: NextRequest) {
   const size = Number(body.size);
   const mimeType = cleanText(body.mimeType, 120) || "application/octet-stream";
 
-  if (!token || !path || !studentName || !studentId || !filename || !Number.isFinite(size) || size <= 0) {
+  if (!token || !path || !studentName || !studentId || !filename || !Number.isSafeInteger(size) || size <= 0) {
     return NextResponse.json({ error: "Please provide your name, student ID and valid file details." }, { status: 400, headers: { "Cache-Control": "no-store" } });
   }
-  if (studentName.length < 2 || size > maxFileSize()) {
-    return NextResponse.json({ error: "Invalid student details or file size." }, { status: 400, headers: { "Cache-Control": "no-store" } });
+  if (size > maxFileSize()) {
+    return NextResponse.json({ error: `This file exceeds the ${Math.round(maxFileSize() / 1024 / 1024)} MB per-file limit.` }, { status: 413, headers: { "Cache-Control": "no-store" } });
   }
 
   const db = supabaseAdmin();
@@ -37,7 +37,7 @@ export async function POST(request: NextRequest) {
   const { data: objects, error: listError } = await db.storage.from(bucketName())
     .list(session.id, { search: leaf, limit: 10 });
   if (listError || !objects?.some((item) => item.name === leaf)) {
-    return NextResponse.json({ error: "Uploaded file could not be verified. Please retry." }, { status: 400, headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json({ error: "The uploaded file could not be found in Storage. Please retry the upload." }, { status: 400, headers: { "Cache-Control": "no-store" } });
   }
 
   const { error: finishError } = await db.rpc("classinbox_finish_upload", {
