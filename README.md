@@ -1,6 +1,6 @@
 # ClassInbox
 
-**Scan. Upload. Done.** ClassInbox is a focused classroom file-submission app. A session creator shares a QR code; students scan it, enter their name and student ID, and upload files. The creator can view submissions and download individual files or one ZIP.
+**Scan. Upload. Done.** ClassInbox is a focused classroom file-submission app. A session creator shares a QR code; students scan it and upload files; providing a name and student ID is optional. The creator can view submissions and download individual files or one ZIP.
 
 ## Features
 
