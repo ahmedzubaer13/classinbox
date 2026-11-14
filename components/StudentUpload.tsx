@@ -127,6 +127,7 @@ async function uploadWithProgress(
 
 async function uploadResumableWithProgress(
   storageOrigin: string,
+  projectOrigin: string,
   apiKey: string,
   file: File,
   token: string,
@@ -142,48 +143,72 @@ async function uploadResumableWithProgress(
   });
   if (!firstHeartbeat.ok) throw new Error("This session has expired. Please ask your teacher for a new QR code.");
 
+  const endpoints = [...new Set([
+    `${storageOrigin}/storage/v1/upload/resumable`,
+    `${projectOrigin}/storage/v1/upload/resumable`,
+  ])];
+
   return new Promise<void>((resolve, reject) => {
     let settled = false;
     let heartbeatPending = false;
     let heartbeatFailed = false;
+    let heartbeatTimer: number;
+    let currentUpload: tus.Upload | null = null;
+    let endpointIndex = 0;
+    let lastError = "";
+
     const finish = () => window.clearInterval(heartbeatTimer);
 
-    const upload = new tus.Upload(file, {
-      endpoint: `${storageOrigin}/storage/v1/upload/resumable`,
-      retryDelays: [0, 3000, 5000, 10000, 20000],
-      headers: {
-        apikey: apiKey,
-        "x-signature": signedToken,
-        "x-upsert": "false",
-      },
-      metadata: {
-        bucketName: bucket,
-        objectName: path,
-        contentType: file.type || "application/octet-stream",
-        cacheControl: "3600",
-      },
-      uploadDataDuringCreation: true,
-      chunkSize: TUS_CHUNK_SIZE,
-      removeFingerprintOnSuccess: true,
-      storeFingerprintForResuming: false,
-      onError: (error) => {
-        if (settled) return;
+    const startEndpoint = () => {
+      if (settled) return;
+      if (endpointIndex >= endpoints.length) {
         settled = true;
         finish();
-        reject(error);
-      },
-      onProgress: (bytesUploaded, bytesTotal) => {
-        if (bytesTotal > 0) onProgress(Math.round((bytesUploaded / bytesTotal) * 100));
-      },
-      onSuccess: () => {
-        if (settled) return;
-        settled = true;
-        finish();
-        resolve();
-      },
-    });
+        reject(new Error(`Storage connection failed on both upload endpoints. ${lastError}`));
+        return;
+      }
 
-    const heartbeatTimer = window.setInterval(async () => {
+      const endpoint = endpoints[endpointIndex++];
+      currentUpload = new tus.Upload(file, {
+        endpoint,
+        retryDelays: [0, 2000, 5000, 10000, 20000, 30000],
+        headers: {
+          apikey: apiKey,
+          "x-signature": signedToken,
+          "x-upsert": "false",
+        },
+        metadata: {
+          bucketName: bucket,
+          objectName: path,
+          contentType: file.type || "application/octet-stream",
+          cacheControl: "3600",
+        },
+        uploadDataDuringCreation: true,
+        chunkSize: TUS_CHUNK_SIZE,
+        removeFingerprintOnSuccess: true,
+        storeFingerprintForResuming: false,
+        onError: (error) => {
+          if (settled) return;
+          lastError = error.message || "Network request failed";
+          // Retry the complete TUS handshake through the project API hostname
+          // when a mobile carrier cannot reach the direct Storage hostname.
+          startEndpoint();
+        },
+        onProgress: (bytesUploaded, bytesTotal) => {
+          if (bytesTotal > 0) onProgress(Math.round((bytesUploaded / bytesTotal) * 100));
+        },
+        onSuccess: () => {
+          if (settled) return;
+          settled = true;
+          finish();
+          onProgress(100);
+          resolve();
+        },
+      });
+      currentUpload.start();
+    };
+
+    heartbeatTimer = window.setInterval(async () => {
       if (heartbeatPending || settled) return;
       heartbeatPending = true;
       try {
@@ -198,15 +223,16 @@ async function uploadResumableWithProgress(
       } finally {
         heartbeatPending = false;
       }
+
       if (heartbeatFailed && !settled) {
         settled = true;
         finish();
-        void upload.abort().catch(() => undefined);
+        void currentUpload?.abort().catch(() => undefined);
         reject(new Error("The session expired during upload. Please ask your teacher for a new QR code."));
       }
     }, 45_000);
 
-    upload.start();
+    startEndpoint();
   });
 }
 
@@ -290,6 +316,7 @@ export default function StudentUpload({ token }: { token: string }) {
           if (item.file.size > RESUMABLE_THRESHOLD) {
             await uploadResumableWithProgress(
               storageOrigin,
+              getProjectOrigin(supabaseUrl),
               anonKey,
               item.file,
               token,
