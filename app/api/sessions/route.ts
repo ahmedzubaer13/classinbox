@@ -7,7 +7,7 @@ import type { Submission } from "@/lib/types";
 
 export async function GET(request: NextRequest) {
   const creatorSecret = readCreatorSecret(request);
-  if (!creatorSecret) return NextResponse.json({ sessions: [], submissions: [] });
+  if (!creatorSecret) return NextResponse.json({ sessions: [], submissions: [] }, { headers: { "Cache-Control": "no-store" } });
 
   const db = supabaseAdmin();
   const { data: sessions, error } = await db
@@ -17,18 +17,18 @@ export async function GET(request: NextRequest) {
     .order("created_at", { ascending: false })
     .limit(500);
 
-  if (error) return NextResponse.json({ error: "Could not load sessions." }, { status: 500 });
+  if (error) return NextResponse.json({ error: "Could not load sessions." }, { status: 500, headers: { "Cache-Control": "no-store" } });
   const owned = sessions ?? [];
   const ids = owned.map((session) => session.id);
   let submissions: Submission[] = [];
 
   if (ids.length) {
     const result = await db.from("submissions").select("*").in("session_id", ids).order("created_at", { ascending: false });
-    if (result.error) return NextResponse.json({ error: "Could not load submissions." }, { status: 500 });
+    if (result.error) return NextResponse.json({ error: "Could not load submissions." }, { status: 500, headers: { "Cache-Control": "no-store" } });
     submissions = (result.data ?? []) as Submission[];
   }
 
-  return NextResponse.json({ sessions: owned, submissions });
+  return NextResponse.json({ sessions: owned, submissions }, { headers: { "Cache-Control": "no-store" } });
 }
 
 export async function POST(request: NextRequest) {
