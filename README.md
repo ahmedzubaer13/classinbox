@@ -99,7 +99,7 @@ The live Supabase project has this setup already enabled: the `classinbox-cleanu
 
    Replace `YOUR_PROJECT_REF` with the Supabase project reference. Do not schedule the same job twice.
 
-The worker claims sessions after 30 minutes without meaningful activity, deletes Storage paths recorded in both submissions and upload intents, retries failed deletes, and retains a cleanup tombstone until all signed upload URLs have expired. The 2h15m retention window is measured from the start of cleanup, not the last heartbeat.
+The worker claims sessions after 30 minutes without meaningful activity, deletes Storage paths recorded in both submissions and upload intents, retries failed deletes, and retains a cleanup tombstone until all signed upload URLs have expired. Standard signed upload URLs are retained for 2h15m after cleanup begins. Resumable upload URLs can remain valid for up to 24 hours, so sessions with resumable upload intents are retained for 24h15m after cleanup begins.
 
 ## Deployment
 
@@ -120,5 +120,5 @@ Set the Vercel Serverless Function region to `sin1` for the Mumbai-region Supaba
 - Creator ownership is browser-profile-based, not an identity system. Clearing cookies or switching devices loses access to existing sessions.
 - Student name and ID are self-reported and are not verified.
 - Students need their own internet/mobile data.
-- Signed upload URLs are valid for up to two hours. The cleanup worker waits 2h15m after cleanup begins before removing the session row, and re-removes all tracked object paths on each retry.
+- Standard signed upload URLs are valid for up to two hours. Resumable TUS upload URLs may remain valid for up to 24 hours. The cleanup worker waits 2h15m for ordinary sessions and 24h15m when a session contains a resumable upload intent, re-removing all tracked object paths on each retry.
 - Add rate limiting and quotas before a broad public launch.
