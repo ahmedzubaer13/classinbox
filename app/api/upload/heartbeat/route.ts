@@ -6,12 +6,12 @@ export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => ({}));
   const token = cleanText(body.token, 200);
   const path = cleanText(body.path, 500);
-  if (!token || !path) return NextResponse.json({ error: "Invalid upload heartbeat." }, { ...{ status: 400 }, headers: { "Cache-Control": "no-store" } }, { headers: { "Cache-Control": "no-store" } });
+  if (!token || !path) return NextResponse.json({ error: "Invalid upload heartbeat." }, { status: 400, headers: { "Cache-Control": "no-store" } });
 
   const { error } = await supabaseAdmin().rpc("classinbox_heartbeat_upload", {
     p_public_token: token,
     p_storage_path: path,
   });
-  if (error) return NextResponse.json({ error: "This upload session is no longer active." }, { ...{ status: 410 }, headers: { "Cache-Control": "no-store" } }, { headers: { "Cache-Control": "no-store" } });
+  if (error) return NextResponse.json({ error: "This upload session is no longer active." }, { status: 410, headers: { "Cache-Control": "no-store" } });
   return NextResponse.json({ ok: true }, { headers: { "Cache-Control": "no-store" } });
 }
