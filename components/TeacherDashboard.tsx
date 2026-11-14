@@ -59,7 +59,7 @@ export default function TeacherDashboard() {
     <main className="app-shell">
       <header className="app-top">
         <Link className="brand" href="/"><span className="brand-mark"><Inbox size={21}/></span>ClassInbox</Link>
-        <div className="actions"><button className="button button-secondary button-small" onClick={() => void load()}><RefreshCw size={14}/> Refresh</button></div>
+        <div className="actions"><button className="button button-secondary button-small" onClick={() => void load()} disabled={loading}><RefreshCw size={14}/> {loading ? "Refreshing…" : "Refresh"}</button></div>
       </header>
       <div className="app-main">
         <div className="page-heading"><div><span className="eyebrow">TEACHER WORKSPACE</span><h1>Your classroom inbox.</h1><p>Create a session, share its QR code, and collect files.</p></div><div className="pill pill-open"><span style={{ width: 6, height: 6, borderRadius: 9, background: "#76b34a", marginRight: 6 }}/> READY</div></div>
@@ -75,7 +75,7 @@ export default function TeacherDashboard() {
           <div className="panel">
             <h2 className="panel-title">Your collection overview</h2>
             <div className="fake-stats" style={{ marginTop: 5 }}><div><strong>{sessions.length}</strong><small>Sessions</small></div><div><strong>{totalFiles}</strong><small>Files received</small></div><div><strong>{sessions.filter(s => s.is_active).length}</strong><small>Open sessions</small></div></div>
-            <p className="small muted" style={{ marginTop: 24 }}>Files are stored privately. Only the teacher dashboard can generate download links.</p>
+            <p className="small muted" style={{ marginTop: 24 }}>Files are stored privately. Only the browser that created this session can view or download its submissions.</p>
           </div>
         </div>
 
