@@ -4,7 +4,7 @@ import { supabaseAdmin, bucketName } from "@/lib/supabase-admin";
 
 export async function GET(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   const creatorSecret = readCreatorSecret(request);
-  if (!creatorSecret) return NextResponse.json({ error: "Submission not found." }, { status: 404 });
+  if (!creatorSecret) return NextResponse.json({ error: "Submission not found." }, { status: 404, headers: { "Cache-Control": "no-store" } });
 
   const { id } = await context.params;
   const db = supabaseAdmin();
@@ -28,10 +28,10 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
     .is("cleanup_started_at", null)
     .gt("last_activity_at", new Date(Date.now() - 30 * 60_000).toISOString())
     .select("id").maybeSingle();
-  if (!touched) return NextResponse.json({ error: "Session not found or expired." }, { status: 404 });
+  if (!touched) return NextResponse.json({ error: "Session not found or expired." }, { status: 404, headers: { "Cache-Control": "no-store" } });
 
   const { data, error } = await db.storage.from(bucketName())
     .createSignedUrl(submission.storage_path, 60, { download: submission.original_filename });
-  if (error || !data) return NextResponse.json({ error: "Could not create download link." }, { status: 500 });
-  return NextResponse.redirect(data.signedUrl);
+  if (error || !data) return NextResponse.json({ error: "Could not create download link." }, { status: 500, headers: { "Cache-Control": "no-store" } });
+  return NextResponse.redirect(data.signedUrl, { headers: { "Cache-Control": "no-store" } });
 }
