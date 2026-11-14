@@ -9,6 +9,7 @@ export async function POST(request: NextRequest) {
   const name = safeFilename(cleanText(body.filename, 200));
   const size = Number(body.size);
   const batchSize = Number(body.batchSize);
+  const isResumable = size > 6 * 1024 * 1024;
 
   if (!token || !name || !Number.isFinite(size) || size <= 0) {
     return NextResponse.json({ error: "Invalid upload details." }, { status: 400, headers: { "Cache-Control": "no-store" } });
@@ -35,6 +36,7 @@ export async function POST(request: NextRequest) {
   const { error: intentError } = await db.rpc("classinbox_begin_upload", {
     p_public_token: token,
     p_storage_path: path,
+    p_is_resumable: isResumable,
   });
   if (intentError) return NextResponse.json({ error: "This session has expired or is closed." }, { status: 410, headers: { "Cache-Control": "no-store" } });
 
@@ -44,5 +46,5 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Could not prepare upload." }, { status: 500, headers: { "Cache-Control": "no-store" } });
   }
 
-  return NextResponse.json({ path, signedToken: data.token, bucket: bucketName(), maxFiles: maxFiles() }, { headers: { "Cache-Control": "no-store" } });
+  return NextResponse.json({ path, signedToken: data.token, bucket: bucketName(), maxFiles: maxFiles(), resumable: isResumable }, { headers: { "Cache-Control": "no-store" } });
 }
