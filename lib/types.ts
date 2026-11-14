@@ -5,6 +5,8 @@ export type ClassSession = {
   is_active: boolean;
   created_at: string;
   closed_at: string | null;
+  last_activity_at?: string;
+  cleanup_started_at?: string | null;
 };
 
 export type Submission = {
