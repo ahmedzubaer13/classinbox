@@ -12,8 +12,8 @@ export async function POST(request: NextRequest) {
   const size = Number(body.size);
   const mimeType = cleanText(body.mimeType, 120) || "application/octet-stream";
 
-  if (!token || !path || !studentName || !studentId || !filename || !Number.isSafeInteger(size) || size <= 0) {
-    return NextResponse.json({ error: "Please provide your name, student ID and valid file details." }, { status: 400, headers: { "Cache-Control": "no-store" } });
+  if (!token || !path || !filename || !Number.isSafeInteger(size) || size <= 0) {
+    return NextResponse.json({ error: "Invalid file details. Please select the file again and retry." }, { status: 400, headers: { "Cache-Control": "no-store" } });
   }
   if (size > maxFileSize()) {
     return NextResponse.json({ error: `This file exceeds the ${Math.round(maxFileSize() / 1024 / 1024)} MB per-file limit.` }, { status: 413, headers: { "Cache-Control": "no-store" } });
@@ -48,8 +48,8 @@ export async function POST(request: NextRequest) {
 
   const { data, error } = await db.from("submissions").insert({
     session_id: session.id,
-    student_name: studentName,
-    student_id: studentId,
+    student_name: studentName || "",
+    student_id: studentId || "",
     original_filename: filename,
     storage_path: path,
     mime_type: mimeType,
