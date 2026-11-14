@@ -362,14 +362,48 @@ export default function StudentUpload({ token }: { token: string }) {
         if (!completeRes.ok) throw new Error(complete.error || "Could not confirm submission.");
         updateItem(item.id, { status: "done", progress: 100, uploadPath, storageUploaded: true });
       } catch (err) {
-        // Do not mark a completed Storage object as failed when only the
-        // metadata-confirmation request failed. The next attempt can finalize it.
+        // A browser can lose the Storage response after the object was
+        // accepted. Verify with our server before calling the upload failed.
         if (uploadPath && !storageUploaded) {
-          await fetch("/api/upload/fail", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ token, path: uploadPath }),
-          }).catch(() => undefined);
+          try {
+            const verifyRes = await fetch("/api/upload/complete", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                token,
+                path: uploadPath,
+                filename: item.file.name,
+                size: item.file.size,
+                mimeType: item.file.type,
+                studentName,
+                studentId,
+              }),
+            });
+            const verify = await verifyRes.json().catch(() => ({}));
+            if (verifyRes.ok) {
+              updateItem(item.id, {
+                status: "done",
+                progress: 100,
+                uploadPath,
+                storageUploaded: true,
+                error: undefined,
+              });
+              return;
+            }
+
+            // Only mark the intent failed when the server definitively says
+            // the object does not exist. Retain it for cleanup on transient 5xx/network errors.
+            if (verifyRes.status === 400 && String(verify.error || "").toLowerCase().includes("not be found")) {
+              await fetch("/api/upload/fail", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ token, path: uploadPath }),
+              }).catch(() => undefined);
+            }
+          } catch {
+            // Keep the intent tracked; the cleanup worker can safely remove it
+            // after its inactivity window if the object never becomes visible.
+          }
         }
         updateItem(item.id, {
           status: "error",
