@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, File, Inbox, UploadCloud, AlertCircle } from "lucide-react";
 import { formatBytes } from "@/lib/types";
 
-type UploadItem = { id: string; file: File; progress: number; status: "queued" | "uploading" | "done" | "error"; error?: string };
+type UploadItem = { id: string; file: File; progress: number; status: "queued" | "uploading" | "done" | "error"; error?: string; uploadPath?: string; storageUploaded?: boolean };
 
 async function uploadWithProgress(
   url: string,
@@ -125,41 +125,81 @@ export default function StudentUpload({ token }: { token: string }) {
     let nextIndex = 0;
 
     async function processItem(item: UploadItem) {
-      updateItem(item.id, { status: "uploading", progress: 0, error: undefined });
-      let uploadPath = "";
+      updateItem(item.id, { status: "uploading", progress: item.storageUploaded ? 100 : 0, error: undefined });
+      let uploadPath = item.uploadPath ?? "";
+      let storageUploaded = item.storageUploaded ?? false;
       try {
-        const initRes = await fetch("/api/upload/init", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token, filename: item.file.name, size: item.file.size, mimeType: item.file.type, batchSize: pending.length }) });
-        const init = await initRes.json();
-        if (!initRes.ok) throw new Error(init.error || "Could not prepare upload.");
-        setMaxFilesAllowed(init.maxFiles || 10);
-        uploadPath = init.path;
-        const storageOrigin = getStorageOrigin(supabaseUrl);
+        if (!storageUploaded || !uploadPath) {
+          const initRes = await fetch("/api/upload/init", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              token,
+              filename: item.file.name,
+              size: item.file.size,
+              mimeType: item.file.type,
+              batchSize: pending.length,
+            }),
+          });
+          const init = await initRes.json();
+          if (!initRes.ok) throw new Error(init.error || "Could not prepare upload.");
+          setMaxFilesAllowed(init.maxFiles || 10);
+          uploadPath = init.path;
+          updateItem(item.id, { uploadPath, storageUploaded: false });
 
-        if (item.file.size > RESUMABLE_THRESHOLD) {
-          await uploadResumableWithProgress(
-            storageOrigin,
-            anonKey,
-            item.file,
-            token,
-            init.path,
-            init.bucket,
-            init.signedToken,
-            (progress) => updateItem(item.id, { progress }),
-          );
-        } else {
-          const objectUrl = `${storageOrigin}/storage/v1/object/upload/sign/${encodeURIComponent(init.bucket)}/${init.path.split("/").map(encodeURIComponent).join("/")}?token=${encodeURIComponent(init.signedToken)}`;
-          await uploadWithProgress(objectUrl, anonKey, item.file, token, init.path, (progress) => updateItem(item.id, { progress }));
+          const storageOrigin = getStorageOrigin(supabaseUrl);
+          if (item.file.size > RESUMABLE_THRESHOLD) {
+            await uploadResumableWithProgress(
+              storageOrigin,
+              anonKey,
+              item.file,
+              token,
+              init.path,
+              init.bucket,
+              init.signedToken,
+              (progress) => updateItem(item.id, { progress }),
+            );
+          } else {
+            const objectUrl = `${storageOrigin}/storage/v1/object/upload/sign/${encodeURIComponent(init.bucket)}/${init.path.split("/").map(encodeURIComponent).join("/")}?token=${encodeURIComponent(init.signedToken)}`;
+            await uploadWithProgress(objectUrl, anonKey, item.file, token, init.path, (progress) => updateItem(item.id, { progress }));
+          }
+          storageUploaded = true;
+          updateItem(item.id, { progress: 100, storageUploaded: true });
         }
 
-        const completeRes = await fetch("/api/upload/complete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token, path: init.path, filename: item.file.name, size: item.file.size, mimeType: item.file.type, studentName, studentId }) });
+        // Completion is retryable without uploading the file a second time.
+        const completeRes = await fetch("/api/upload/complete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            token,
+            path: uploadPath,
+            filename: item.file.name,
+            size: item.file.size,
+            mimeType: item.file.type,
+            studentName,
+            studentId,
+          }),
+        });
         const complete = await completeRes.json();
         if (!completeRes.ok) throw new Error(complete.error || "Could not confirm submission.");
-        updateItem(item.id, { status: "done", progress: 100 });
+        updateItem(item.id, { status: "done", progress: 100, uploadPath, storageUploaded: true });
       } catch (err) {
-        if (uploadPath) {
-          await fetch("/api/upload/fail", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token, path: uploadPath }) }).catch(() => undefined);
+        // Do not mark a completed Storage object as failed when only the
+        // metadata-confirmation request failed. The next attempt can finalize it.
+        if (uploadPath && !storageUploaded) {
+          await fetch("/api/upload/fail", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token, path: uploadPath }),
+          }).catch(() => undefined);
         }
-        updateItem(item.id, { status: "error", error: err instanceof Error ? err.message : "Upload failed." });
+        updateItem(item.id, {
+          status: "error",
+          uploadPath: storageUploaded ? uploadPath : undefined,
+          storageUploaded,
+          error: err instanceof Error ? err.message : "Upload failed.",
+        });
       }
     }
 
