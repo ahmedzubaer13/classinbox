@@ -21,6 +21,15 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
     return NextResponse.json({ error: "Submission not found." }, { status: 404 });
   }
 
+  const { data: touched } = await db.from("sessions")
+    .update({ last_activity_at: new Date().toISOString() })
+    .eq("id", session.id)
+    .eq("owner_key_hash", ownerHashForSession(creatorSecret, session.id))
+    .is("cleanup_started_at", null)
+    .gt("last_activity_at", new Date(Date.now() - 30 * 60_000).toISOString())
+    .select("id").maybeSingle();
+  if (!touched) return NextResponse.json({ error: "Session not found or expired." }, { status: 404 });
+
   const { data, error } = await db.storage.from(bucketName())
     .createSignedUrl(submission.storage_path, 60, { download: submission.original_filename });
   if (error || !data) return NextResponse.json({ error: "Could not create download link." }, { status: 500 });
