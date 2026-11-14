@@ -1,4 +1,4 @@
-import { createHmac, randomBytes } from "node:crypto";
+import { createHmac, createHash, randomBytes } from "node:crypto";
 import type { NextRequest, NextResponse } from "next/server";
 
 const COOKIE_NAME = "classinbox_creator";
@@ -11,6 +11,10 @@ export function readCreatorSecret(request: NextRequest) {
 
 export function newCreatorSecret() {
   return randomBytes(32).toString("base64url");
+}
+
+export function creatorIdHash(creatorSecret: string) {
+  return createHash("sha256").update(creatorSecret).digest("hex");
 }
 
 export function ownerHashForSession(creatorSecret: string, sessionId: string) {
