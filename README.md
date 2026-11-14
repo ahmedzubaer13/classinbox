@@ -1,92 +1,67 @@
 # ClassInbox
 
-A focused classroom file-submission MVP. Teachers create a session and display a QR code. Students scan it, select multiple files, see upload progress, and submit. Teachers can download individual files or all submissions as a ZIP.
+**Scan. Upload. Done.** ClassInbox is a focused classroom file-submission app. A session creator shares a QR code; students scan it, enter their name and student ID, and upload files. The creator can view submissions and download individual files or one ZIP.
 
-## MVP features
+## Features
 
-- Password-protected teacher dashboard
-- QR-code session creation
-- Public mobile-friendly upload page
-- Multiple files per submission
-- Per-file upload progress using XMLHttpRequest
-- Private Supabase Storage bucket
-- Individual signed downloads
-- Server-generated ZIP download
-- Session close/reopen controls
+- QR-code submission sessions
+- Mobile upload page; students need no account or app
+- Multiple files per submission, with actual per-file upload progress
+- Private Supabase Storage
+- Individual downloads and session ZIP downloads
+- Creator-only session management without a teacher login
+- Sessions expire after 30 minutes of inactivity
+- Upload heartbeats keep a session active while a file is genuinely transferring
+- Scheduled cleanup removes stored files and retries failures
 
-## Architecture
+## Access model
 
-- Next.js App Router (web UI and server routes)
-- Supabase Postgres (sessions and submission metadata)
-- Supabase Storage (private file objects)
-- Signed upload URLs: the server validates the session and creates a one-use upload URL; the browser uploads directly to Storage.
-- Teacher password is checked server-side. The service-role key never reaches the browser.
+No teacher accounts or shared password are used. The browser that creates a session receives a high-entropy, HTTP-only, SameSite=Strict creator cookie. The database stores only a per-session HMAC and a one-way creator lookup hash. That browser can list and manage its own sessions; other browsers cannot access those sessions.
 
-## Requirements
+**Important:** Access is tied to the browser profile that created the session. Do not clear its site cookies or use private/incognito mode for sessions that must remain accessible. There is no account-based recovery or cross-device transfer in this MVP. Anyone using the same unlocked browser profile can access its creator sessions.
 
-- Node.js 22+
-- A Supabase project
-- npm
+Student QR links are upload-only. They do not reveal submissions or grant download access.
 
-## 1. Install
+## Stack
 
-```bash
-npm install
-cp .env.example .env.local
-```
+- Next.js App Router + TypeScript
+- Supabase Postgres and private Storage
+- Vercel hosting
+- Server-side Supabase secret key
 
-Fill in all environment variables in `.env.local`. Never put `SUPABASE_SERVICE_ROLE_KEY` in a `NEXT_PUBLIC_` variable.
+## Local setup
 
-Generate a session secret, for example:
+1. Use Node.js 22 or newer.
+2. Install dependencies with `npm install`.
+3. Copy `.env.example` to `.env.local` and fill in the values.
+4. Apply the SQL migrations in `supabase/migrations` to your Supabase project, in order.
+5. Create a private Storage bucket named `classinbox-submissions` with a 50 MB file limit.
+6. Run `npm run dev`.
 
-```bash
-openssl rand -base64 48
-```
+Never expose `SUPABASE_SECRET_KEY` to client-side code or prefix it with `NEXT_PUBLIC_`.
 
-## 2. Configure Supabase
+## Supabase expiry worker
 
-1. Open the Supabase SQL Editor.
-2. Run `supabase/migrations/0001_initial.sql`.
-3. Create a **private** Storage bucket named `classinbox-submissions` (or the name in `SUPABASE_STORAGE_BUCKET`).
-4. Set a sensible global file-size limit in Supabase Storage. The app also enforces `MAX_FILE_SIZE_MB`.
-5. Copy the project URL, publishable/anon key, and service-role key into `.env.local`.
+The deployed Supabase project has a scheduled `classinbox-cleanup` Edge Function and a cron job that runs every minute. It claims sessions after 30 minutes of inactivity, deletes tracked object paths, retries Storage errors, and preserves a cleanup tombstone until signed upload URLs have expired. Upload intents ensure objects are tracked even when the browser drops before the submission row is created.
 
-The migration intentionally enables RLS and creates no public policies. All database operations happen through server routes using the service-role key. The service-role key is server-only.
+## Deployment
 
-## 3. Run locally
+Connect the GitHub repository to Vercel and set these environment variables for Production, Preview, and Development as needed:
 
-```bash
-npm run dev
-```
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `SUPABASE_SECRET_KEY` (server-only Supabase secret key; legacy service-role key is accepted as fallback)
+- `SUPABASE_STORAGE_BUCKET=classinbox-submissions`
+- `NEXT_PUBLIC_APP_URL=https://classinbox.vercel.app`
+- `MAX_FILE_SIZE_MB=50`
+- `MAX_FILES_PER_SUBMISSION=10`
 
-Open http://localhost:3000. The default teacher route is `/teacher`.
+Set the Vercel Serverless Function region to `sin1` for the Mumbai-region Supabase project.
 
-## 4. Deploy
+## Known limitations
 
-Deploy to Vercel or another Node-compatible host. Configure the same environment variables in the deployment settings. Run the SQL migration and create the private bucket before accepting submissions.
-
-## Security notes
-
-- The teacher dashboard is protected by an HMAC-signed, HttpOnly cookie.
-- Student upload URLs are short-lived Supabase signed upload URLs and are scoped to a generated object path.
-- Student uploads are restricted by active session, file count, file size, and file name sanitization.
-- Storage remains private. Downloads are issued through short-lived signed URLs.
-- The teacher password is a single-admin MVP mechanism. Before multi-teacher/public production use, replace it with proper individual teacher accounts, password hashing, rate limiting, audit logging, and account recovery.
-- Add rate limiting / CAPTCHA to session and upload-init endpoints before a public launch. Enforce upload quotas and monitor Storage usage.
-- A QR link is a bearer link: anyone who has it can submit while the session is open. Close sessions promptly and avoid displaying sensitive session details.
-
-## Current MVP limitations
-
-- One shared teacher password.
-- Student identity is self-reported (name and student ID); it is not verified.
-- Uploads require student internet/mobile data.
-- Upload progress is per file. If a mobile connection drops, the student can retry the failed file; resumable chunk upload is not yet implemented.
-- ZIP creation buffers one file at a time in the server process. For very large sessions, move ZIP generation to a background job/object-storage export.
-
-## Scripts
-
-```bash
-npm run dev
-npm run build
-npm run start
-```
+- Creator ownership is browser-profile-based, not an identity system. Clearing cookies or switching devices loses access to existing sessions.
+- Student name and ID are self-reported and are not verified.
+- Students need their own internet/mobile data.
+- Uploads are direct to Supabase Storage using signed upload URLs; an individual signed upload URL is valid for two hours. The cleanup worker waits beyond this validity window before final session deletion.
+- Add rate limiting and quotas before a broad public launch.
