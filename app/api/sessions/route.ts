@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
-import { readCreatorSecret, newCreatorSecret, ownerHashForSession, setCreatorCookie } from "@/lib/auth";
+import { readCreatorSecret, newCreatorSecret, creatorIdHash, ownerHashForSession, setCreatorCookie } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { newPublicToken, cleanText } from "@/lib/validation";
 import type { Submission } from "@/lib/types";
@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
   const { data: sessions, error } = await db
     .from("sessions")
     .select("id,title,public_token,is_active,created_at,closed_at,last_activity_at,cleanup_started_at")
-    .not("owner_key_hash", "is", null)
+    .eq("owner_id_hash", creatorIdHash(creatorSecret))
     .order("created_at", { ascending: false })
     .limit(100);
 
@@ -30,7 +30,7 @@ export async function GET(request: NextRequest) {
     submissions = (result.data ?? []) as Submission[];
   }
 
-  const safeSessions = owned.map(({ owner_key_hash: _secretHash, ...session }) => session);
+  const safeSessions = owned.map(({ owner_key_hash: _secretHash, owner_id_hash: _creatorHash, ...session }) => session);
   return NextResponse.json({ sessions: safeSessions, submissions });
 }
 
@@ -50,6 +50,7 @@ export async function POST(request: NextRequest) {
     title,
     public_token: token,
     owner_key_hash: ownerKeyHash,
+    owner_id_hash: creatorIdHash(creatorSecret),
     is_active: true,
   }).select("id,title,public_token,is_active,created_at,closed_at,last_activity_at,cleanup_started_at").single();
 
