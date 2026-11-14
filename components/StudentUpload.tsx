@@ -122,7 +122,9 @@ export default function StudentUpload({ token }: { token: string }) {
     if (!supabaseUrl || !anonKey) { setMessage("The upload service is not configured. Contact your teacher."); return; }
     setBusy(true); setMessage("");
     const pending = items.filter((item) => item.status !== "done");
-    for (const item of pending) {
+    let nextIndex = 0;
+
+    async function processItem(item: UploadItem) {
       updateItem(item.id, { status: "uploading", progress: 0, error: undefined });
       let uploadPath = "";
       try {
@@ -131,8 +133,24 @@ export default function StudentUpload({ token }: { token: string }) {
         if (!initRes.ok) throw new Error(init.error || "Could not prepare upload.");
         setMaxFilesAllowed(init.maxFiles || 10);
         uploadPath = init.path;
-        const objectUrl = `${supabaseUrl.replace(/\/$/, "")}/storage/v1/object/upload/sign/${encodeURIComponent(init.bucket)}/${init.path.split("/").map(encodeURIComponent).join("/")}?token=${encodeURIComponent(init.signedToken)}`;
-        await uploadWithProgress(objectUrl, anonKey, item.file, token, init.path, (progress) => updateItem(item.id, { progress }));
+        const storageOrigin = getStorageOrigin(supabaseUrl);
+
+        if (item.file.size > RESUMABLE_THRESHOLD) {
+          await uploadResumableWithProgress(
+            storageOrigin,
+            anonKey,
+            item.file,
+            token,
+            init.path,
+            init.bucket,
+            init.signedToken,
+            (progress) => updateItem(item.id, { progress }),
+          );
+        } else {
+          const objectUrl = `${storageOrigin}/storage/v1/object/upload/sign/${encodeURIComponent(init.bucket)}/${init.path.split("/").map(encodeURIComponent).join("/")}?token=${encodeURIComponent(init.signedToken)}`;
+          await uploadWithProgress(objectUrl, anonKey, item.file, token, init.path, (progress) => updateItem(item.id, { progress }));
+        }
+
         const completeRes = await fetch("/api/upload/complete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token, path: init.path, filename: item.file.name, size: item.file.size, mimeType: item.file.type, studentName, studentId }) });
         const complete = await completeRes.json();
         if (!completeRes.ok) throw new Error(complete.error || "Could not confirm submission.");
@@ -144,6 +162,16 @@ export default function StudentUpload({ token }: { token: string }) {
         updateItem(item.id, { status: "error", error: err instanceof Error ? err.message : "Upload failed." });
       }
     }
+
+    // Two simultaneous transfers reduce waiting for a batch without saturating
+    // a typical mobile connection or causing too many concurrent Storage writes.
+    const workerCount = Math.min(2, pending.length);
+    await Promise.all(Array.from({ length: workerCount }, async () => {
+      while (nextIndex < pending.length) {
+        const item = pending[nextIndex++];
+        await processItem(item);
+      }
+    }));
     setBusy(false);
     setMessage("Upload process finished. Check each file's status below.");
   }
