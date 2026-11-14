@@ -6,7 +6,7 @@ export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => ({}));
   const token = cleanText(body.token, 200);
   const path = cleanText(body.path, 500);
-  if (!token || !path) return NextResponse.json({ error: "Invalid upload details." }, { ...{ status: 400 }, headers: { "Cache-Control": "no-store" } }, { headers: { "Cache-Control": "no-store" } });
+  if (!token || !path) return NextResponse.json({ error: "Invalid upload details." }, { status: 400, headers: { "Cache-Control": "no-store" } });
 
   await supabaseAdmin().rpc("classinbox_fail_upload", {
     p_public_token: token,
