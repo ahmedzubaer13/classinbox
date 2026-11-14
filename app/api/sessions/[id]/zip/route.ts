@@ -53,7 +53,7 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
         if (signedError || !signed) throw new Error(signedError?.message || "Could not sign file.");
         const response = await fetch(signed.signedUrl);
         if (!response.ok) throw new Error(`Could not fetch ${item.original_filename}`);
-        const folder = `${item.student_id}_${item.student_name}`.replace(/[^a-z0-9_-]+/gi, "_").slice(0, 100);
+        const folder = `${item.student_id || "no_id"}_${item.student_name || "no_name"}`.replace(/[^a-z0-9_-]+/gi, "_").slice(0, 100);
         archive.append(Buffer.from(await response.arrayBuffer()), { name: `${folder}/${item.original_filename}` });
       }
       await archive.finalize();
