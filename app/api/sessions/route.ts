@@ -15,7 +15,7 @@ export async function GET(request: NextRequest) {
     .select("id,title,public_token,is_active,created_at,closed_at,last_activity_at,cleanup_started_at")
     .eq("owner_id_hash", creatorIdHash(creatorSecret))
     .order("created_at", { ascending: false })
-    .limit(100);
+    .limit(500);
 
   if (error) return NextResponse.json({ error: "Could not load sessions." }, { status: 500 });
   const owned = sessions ?? [];
