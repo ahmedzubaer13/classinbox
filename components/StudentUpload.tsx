@@ -10,6 +10,10 @@ type UploadItem = { id: string; file: File; progress: number; status: "queued" |
 const RESUMABLE_THRESHOLD = 6 * 1024 * 1024;
 const TUS_CHUNK_SIZE = 6 * 1024 * 1024;
 
+function getProjectOrigin(projectUrl: string) {
+  return new URL(projectUrl).origin;
+}
+
 function getStorageOrigin(projectUrl: string) {
   const url = new URL(projectUrl);
   if (url.hostname.endsWith(".supabase.co") && !url.hostname.endsWith(".storage.supabase.co")) {
@@ -19,7 +23,7 @@ function getStorageOrigin(projectUrl: string) {
   return url.origin;
 }
 
-async function uploadWithProgress(
+async function uploadWithProgressOnce(
   url: string,
   apiKey: string,
   file: File,
@@ -84,6 +88,42 @@ async function uploadWithProgress(
   });
 }
 
+
+
+async function uploadWithProgress(
+  primaryUrl: string,
+  fallbackUrl: string,
+  apiKey: string,
+  file: File,
+  token: string,
+  path: string,
+  onProgress: (n: number) => void,
+) {
+  const urls = [...new Set([primaryUrl, fallbackUrl])];
+  let lastError: unknown;
+
+  for (const [urlIndex, url] of urls.entries()) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await uploadWithProgressOnce(url, apiKey, file, token, path, onProgress);
+        return;
+      } catch (error) {
+        lastError = error;
+        if (attempt === 0) {
+          await new Promise((resolve) => window.setTimeout(resolve, 900));
+        }
+      }
+    }
+    // Try the project API hostname if the direct Storage hostname is
+    // unreachable from a mobile carrier or browser network.
+    if (urlIndex < urls.length - 1) {
+      onProgress(0);
+    }
+  }
+
+  const message = lastError instanceof Error ? lastError.message : "Unknown upload failure";
+  throw new Error(`Storage connection failed after retries: ${message}`);
+}
 
 async function uploadResumableWithProgress(
   storageOrigin: string,
@@ -216,7 +256,7 @@ export default function StudentUpload({ token }: { token: string }) {
   }
 
   async function submit() {
-    if (!studentName.trim() || !studentId.trim()) { setMessage("Enter your name and student ID first."); return; }
+    
     if (!items.length) { setMessage("Choose at least one file to upload."); return; }
     if (!supabaseUrl || !anonKey) { setMessage("The upload service is not configured. Contact your teacher."); return; }
     setBusy(true); setMessage("");
@@ -259,8 +299,20 @@ export default function StudentUpload({ token }: { token: string }) {
               (progress) => updateItem(item.id, { progress }),
             );
           } else {
-            const objectUrl = `${storageOrigin}/storage/v1/object/upload/sign/${encodeURIComponent(init.bucket)}/${init.path.split("/").map(encodeURIComponent).join("/")}?token=${encodeURIComponent(init.signedToken)}`;
-            await uploadWithProgress(objectUrl, anonKey, item.file, token, init.path, (progress) => updateItem(item.id, { progress }));
+            const signedPath = `/storage/v1/object/upload/sign/${encodeURIComponent(init.bucket)}/${init.path.split("/").map(encodeURIComponent).join("/")}?token=${encodeURIComponent(init.signedToken)}`;
+            // Prefer the regular project API host for small files; fall back
+            // to the direct Storage host if the mobile network cannot reach it.
+            const projectUploadUrl = `${getProjectOrigin(supabaseUrl)}${signedPath}`;
+            const directStorageUploadUrl = `${storageOrigin}${signedPath}`;
+            await uploadWithProgress(
+              projectUploadUrl,
+              directStorageUploadUrl,
+              anonKey,
+              item.file,
+              token,
+              init.path,
+              (progress) => updateItem(item.id, { progress }),
+            );
           }
           storageUploaded = true;
           updateItem(item.id, { progress: 100, storageUploaded: true });
@@ -323,12 +375,12 @@ export default function StudentUpload({ token }: { token: string }) {
         <h1>{sessionTitle}</h1>
         <p>Enter your details, choose your files, and submit them to your teacher. Keep this page open until uploads finish.</p>
         {closed ? <div className="empty"><AlertCircle size={26}/><p>This session is closed and is no longer accepting submissions.</p></div> : <>
-          <div className="field"><label htmlFor="student-name">YOUR NAME</label><input id="student-name" value={studentName} onChange={(e) => setStudentName(e.target.value)} placeholder="Enter your full name" disabled={busy}/></div>
-          <div className="field"><label htmlFor="student-id">STUDENT ID</label><input id="student-id" value={studentId} onChange={(e) => setStudentId(e.target.value)} placeholder="Enter your student ID" disabled={busy}/></div>
+          <div className="field"><label htmlFor="student-name">YOUR NAME (OPTIONAL)</label><input id="student-name" value={studentName} onChange={(e) => setStudentName(e.target.value)} placeholder="Enter your name (optional)" disabled={busy}/></div>
+          <div className="field"><label htmlFor="student-id">STUDENT ID (OPTIONAL)</label><input id="student-id" value={studentId} onChange={(e) => setStudentId(e.target.value)} placeholder="Enter your student ID (optional)" disabled={busy}/></div>
           <div className="dropzone">
             <UploadCloud size={30} color="#71934f"/>
             <p style={{ fontWeight: 700, fontSize: 13, margin: "9px 0 5px" }}>Choose files to submit</p>
-            <p className="small muted">Select up to {maxFilesAllowed} files. Maximum 50 MB per file.</p>
+            <p className="small muted">Select up to {maxFilesAllowed} files. Maximum 50 MB per file. Name and ID are optional.</p>
             <input ref={inputRef} type="file" multiple onChange={(e) => addFiles(e.target.files)} disabled={busy}/>
           </div>
           {items.length > 0 && <div style={{ margin: "18px 0" }}>
