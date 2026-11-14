@@ -1,10 +1,23 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import * as tus from "tus-js-client";
 import { CheckCircle2, File, Inbox, UploadCloud, AlertCircle } from "lucide-react";
 import { formatBytes } from "@/lib/types";
 
 type UploadItem = { id: string; file: File; progress: number; status: "queued" | "uploading" | "done" | "error"; error?: string; uploadPath?: string; storageUploaded?: boolean };
+
+const RESUMABLE_THRESHOLD = 6 * 1024 * 1024;
+const TUS_CHUNK_SIZE = 6 * 1024 * 1024;
+
+function getStorageOrigin(projectUrl: string) {
+  const url = new URL(projectUrl);
+  if (url.hostname.endsWith(".supabase.co") && !url.hostname.endsWith(".storage.supabase.co")) {
+    const projectRef = url.hostname.slice(0, -".supabase.co".length);
+    url.hostname = `${projectRef}.storage.supabase.co`;
+  }
+  return url.origin;
+}
 
 async function uploadWithProgress(
   url: string,
@@ -68,6 +81,96 @@ async function uploadWithProgress(
         : "Upload cancelled."));
     };
     xhr.send(file);
+  });
+}
+
+
+async function uploadResumableWithProgress(
+  storageOrigin: string,
+  apiKey: string,
+  file: File,
+  token: string,
+  path: string,
+  bucket: string,
+  signedToken: string,
+  onProgress: (n: number) => void,
+) {
+  const firstHeartbeat = await fetch("/api/upload/heartbeat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token, path }),
+  });
+  if (!firstHeartbeat.ok) throw new Error("This session has expired. Please ask your teacher for a new QR code.");
+
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    let heartbeatPending = false;
+    let heartbeatFailed = false;
+    let heartbeatTimer: number | undefined;
+
+    const finish = () => {
+      if (heartbeatTimer !== undefined) window.clearInterval(heartbeatTimer);
+    };
+
+    const upload = new tus.Upload(file, {
+      endpoint: `${storageOrigin}/storage/v1/upload/resumable`,
+      retryDelays: [0, 3000, 5000, 10000, 20000],
+      headers: {
+        apikey: apiKey,
+        "x-signature": signedToken,
+        "x-upsert": "false",
+      },
+      metadata: {
+        bucketName: bucket,
+        objectName: path,
+        contentType: file.type || "application/octet-stream",
+        cacheControl: "3600",
+      },
+      uploadDataDuringCreation: true,
+      chunkSize: TUS_CHUNK_SIZE,
+      removeFingerprintOnSuccess: true,
+      storeFingerprintForResuming: false,
+      onError: (error) => {
+        if (settled) return;
+        settled = true;
+        finish();
+        reject(error);
+      },
+      onProgress: (bytesUploaded, bytesTotal) => {
+        if (bytesTotal > 0) onProgress(Math.round((bytesUploaded / bytesTotal) * 100));
+      },
+      onSuccess: () => {
+        if (settled) return;
+        settled = true;
+        finish();
+        resolve();
+      },
+    });
+
+    heartbeatTimer = window.setInterval(async () => {
+      if (heartbeatPending || settled) return;
+      heartbeatPending = true;
+      try {
+        const response = await fetch("/api/upload/heartbeat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token, path }),
+        });
+        if (!response.ok) heartbeatFailed = true;
+      } catch {
+        heartbeatFailed = true;
+      } finally {
+        heartbeatPending = false;
+      }
+      if (heartbeatFailed && !settled) {
+        settled = true;
+        finish();
+        void upload.abort().catch(() => undefined);
+        reject(new Error("The session expired during upload. Please ask your teacher for a new QR code."));
+      }
+    }, 45_000);
+
+    upload.start();
   });
 }
 
