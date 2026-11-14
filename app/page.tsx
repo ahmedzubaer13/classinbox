@@ -6,13 +6,13 @@ export default function Home() {
     <main className="landing">
       <nav className="topbar wrap">
         <Link href="/" className="brand"><span className="brand-mark"><Inbox size={21}/></span>ClassInbox</Link>
-        <Link href="/teacher" className="button button-dark button-small">Teacher dashboard <ArrowUpRight size={15}/></Link>
+        <Link href="/teacher" className="button button-dark button-small">Dashboard <ArrowUpRight size={15}/></Link>
       </nav>
       <section className="hero wrap">
         <div className="eyebrow"><span className="eyebrow-dot"/> CLASSROOM FILE SUBMISSION, SIMPLIFIED</div>
         <h1>Your classroom&apos;s<br/><span>digital inbox.</span></h1>
         <p className="hero-copy">Collect assignments and classroom files without the usual back-and-forth. One QR code gets everyone to the right upload page.</p>
-        <div className="hero-actions"><Link href="/teacher" className="button button-primary">Open teacher dashboard <ArrowUpRight size={17}/></Link><span className="micro-copy">No student accounts. No app installation.</span></div>
+        <div className="hero-actions"><Link href="/teacher" className="button button-primary">Open Dashboard <ArrowUpRight size={17}/></Link><span className="micro-copy">No accounts. No app installation.</span></div>
         <div className="preview-card">
           <div className="preview-head"><div className="window-dots"><i/><i/><i/></div><span>CLASSINBOX / SESSION PREVIEW</span><span className="live-pill"><b/> READY TO RECEIVE</span></div>
           <div className="preview-body">
