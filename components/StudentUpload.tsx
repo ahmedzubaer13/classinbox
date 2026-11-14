@@ -152,7 +152,6 @@ async function uploadResumableWithProgress(
     let settled = false;
     let heartbeatPending = false;
     let heartbeatFailed = false;
-    let heartbeatTimer: number;
     let currentUpload: tus.Upload | null = null;
     let endpointIndex = 0;
     let lastError = "";
@@ -208,7 +207,7 @@ async function uploadResumableWithProgress(
       currentUpload.start();
     };
 
-    heartbeatTimer = window.setInterval(async () => {
+    const heartbeatTimer = window.setInterval(async () => {
       if (heartbeatPending || settled) return;
       heartbeatPending = true;
       try {
