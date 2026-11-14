@@ -62,7 +62,7 @@ export default function TeacherDashboard() {
         <div className="actions"><button className="button button-secondary button-small" onClick={() => void load()} disabled={loading}><RefreshCw size={14}/> {loading ? "Refreshing…" : "Refresh"}</button></div>
       </header>
       <div className="app-main">
-        <div className="page-heading"><div><span className="eyebrow">TEACHER WORKSPACE</span><h1>Your classroom inbox.</h1><p>Create a session, share its QR code, and collect files.</p></div><div className="pill pill-open"><span style={{ width: 6, height: 6, borderRadius: 9, background: "#76b34a", marginRight: 6 }}/> READY</div></div>
+        <div className="page-heading"><div><h1>Your classroom inbox.</h1><p>Create a session, share its QR code, and collect files.</p></div><div className="pill pill-open"><span style={{ width: 6, height: 6, borderRadius: 9, background: "#76b34a", marginRight: 6 }}/> READY</div></div>
         {notice && <p className="error">{notice}</p>}
         <p className="small muted">Sessions you create are private to this browser. Keep this browser profile to retain access; no teacher account or password is required.</p>
         <div className="session-grid">
@@ -91,7 +91,7 @@ export default function TeacherDashboard() {
           </div>
           <div className="panel">
             <div className="table-head"><div><h2 className="panel-title" style={{ marginBottom: 4 }}>Submissions</h2><span className="small muted">{activeSubmissions.length} file(s) received</span></div><a className="button button-dark button-small" href={`/api/sessions/${active.id}/zip`}><FileArchive size={14}/> Download ZIP</a></div>
-            {activeSubmissions.length ? <div className="submission-list">{activeSubmissions.map((s) => <div className="submission-row" key={s.id}><div><strong>{s.original_filename}</strong><small>{s.student_name} · {s.student_id} · {formatBytes(Number(s.file_size))}</small></div><a className="button button-secondary button-small" href={`/api/download/${s.id}`}><FileDown size={14}/> Download</a></div>)}</div> : <div className="empty"><Inbox size={25}/><p>No files yet. Share the QR code to receive submissions.</p></div>}
+            {activeSubmissions.length ? <div className="submission-list">{activeSubmissions.map((s) => <div className="submission-row" key={s.id}><div><strong>{s.original_filename}</strong><small>{s.student_name || "Name not provided"} · {s.student_id || "ID not provided"} · {formatBytes(Number(s.file_size))}</small></div><a className="button button-secondary button-small" href={`/api/download/${s.id}`}><FileDown size={14}/> Download</a></div>)}</div> : <div className="empty"><Inbox size={25}/><p>No files yet. Share the QR code to receive submissions.</p></div>}
           </div>
         </section>}
 
