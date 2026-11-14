@@ -5,11 +5,11 @@ import { supabaseAdmin } from "@/lib/supabase-admin";
 export async function PATCH(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
   const creatorSecret = readCreatorSecret(request);
-  if (!creatorSecret) return NextResponse.json({ error: "Session not found." }, { status: 404 });
+  if (!creatorSecret) return NextResponse.json({ error: "Session not found." }, { status: 404, headers: { "Cache-Control": "no-store" } });
 
   const body = await request.json().catch(() => ({}));
   if (typeof body.is_active !== "boolean") {
-    return NextResponse.json({ error: "Invalid session status." }, { status: 400 });
+    return NextResponse.json({ error: "Invalid session status." }, { status: 400, headers: { "Cache-Control": "no-store" } });
   }
 
   const db = supabaseAdmin();
@@ -22,7 +22,7 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ i
     .select("id")
     .maybeSingle();
 
-  if (error) return NextResponse.json({ error: "Could not update this session." }, { status: 500 });
-  if (!data) return NextResponse.json({ error: "Session not found or its 30-minute inactivity period has ended." }, { status: 404 });
-  return NextResponse.json({ ok: true });
+  if (error) return NextResponse.json({ error: "Could not update this session." }, { status: 500, headers: { "Cache-Control": "no-store" } });
+  if (!data) return NextResponse.json({ error: "Session not found or its 30-minute inactivity period has ended." }, { status: 404, headers: { "Cache-Control": "no-store" } });
+  return NextResponse.json({ ok: true }, { headers: { "Cache-Control": "no-store" } });
 }
