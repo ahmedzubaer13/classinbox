@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
-import { readCreatorSecret, newCreatorSecret, creatorIdHash, ownerHashForSession, setCreatorCookie } from "@/lib/auth";
+import { readCreatorSecret, newCreatorSecret, creatorIdHash, setCreatorCookie } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { newPublicToken, cleanText } from "@/lib/validation";
 import type { Submission } from "@/lib/types";
@@ -18,9 +18,7 @@ export async function GET(request: NextRequest) {
     .limit(100);
 
   if (error) return NextResponse.json({ error: "Could not load sessions." }, { status: 500 });
-  const owned = (sessions ?? []).filter((session) =>
-    session.owner_key_hash === ownerHashForSession(creatorSecret, session.id)
-  );
+  const owned = sessions ?? [];
   const ids = owned.map((session) => session.id);
   let submissions: Submission[] = [];
 
@@ -30,8 +28,7 @@ export async function GET(request: NextRequest) {
     submissions = (result.data ?? []) as Submission[];
   }
 
-  const safeSessions = owned.map(({ owner_key_hash: _secretHash, owner_id_hash: _creatorHash, ...session }) => session);
-  return NextResponse.json({ sessions: safeSessions, submissions });
+  return NextResponse.json({ sessions: owned, submissions });
 }
 
 export async function POST(request: NextRequest) {
