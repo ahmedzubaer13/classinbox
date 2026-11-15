@@ -1,14 +1,69 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, File, FilePlus2, Inbox, UploadCloud, X, AlertCircle } from "lucide-react";
+import * as tus from "tus-js-client";
+import { CheckCircle2, File, Inbox, UploadCloud, AlertCircle } from "lucide-react";
 import { formatBytes } from "@/lib/types";
 
-type UploadItem = { id: string; file: File; progress: number; status: "queued" | "uploading" | "done" | "error"; error?: string };
+type UploadItem = { id: string; file: File; progress: number; status: "queued" | "uploading" | "done" | "error"; error?: string; uploadPath?: string; storageUploaded?: boolean };
 
-function uploadWithProgress(url: string, apiKey: string, file: File, onProgress: (n: number) => void) {
+const RESUMABLE_THRESHOLD = 6 * 1024 * 1024;
+const TUS_CHUNK_SIZE = 6 * 1024 * 1024;
+
+function getProjectOrigin(projectUrl: string) {
+  return new URL(projectUrl).origin;
+}
+
+function getStorageOrigin(projectUrl: string) {
+  const url = new URL(projectUrl);
+  if (url.hostname.endsWith(".supabase.co") && !url.hostname.endsWith(".storage.supabase.co")) {
+    const projectRef = url.hostname.slice(0, -".supabase.co".length);
+    url.hostname = `${projectRef}.storage.supabase.co`;
+  }
+  return url.origin;
+}
+
+async function uploadWithProgressOnce(
+  url: string,
+  apiKey: string,
+  file: File,
+  token: string,
+  path: string,
+  onProgress: (n: number) => void,
+) {
+  const firstHeartbeat = await fetch("/api/upload/heartbeat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token, path }),
+  });
+  if (!firstHeartbeat.ok) throw new Error("This session has expired. Please ask your teacher for a new QR code.");
+
   return new Promise<void>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    let heartbeatPending = false;
+    let heartbeatFailed = false;
+    const heartbeatTimer = window.setInterval(async () => {
+      if (heartbeatPending || xhr.readyState === XMLHttpRequest.DONE) return;
+      heartbeatPending = true;
+      try {
+        const response = await fetch("/api/upload/heartbeat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token, path }),
+        });
+        if (!response.ok) {
+          heartbeatFailed = true;
+          xhr.abort();
+        }
+      } catch {
+        heartbeatFailed = true;
+        xhr.abort();
+      } finally {
+        heartbeatPending = false;
+      }
+    }, 45_000);
+
+    const finish = () => window.clearInterval(heartbeatTimer);
     xhr.open("PUT", url);
     xhr.setRequestHeader("apikey", apiKey);
     xhr.setRequestHeader("x-upsert", "false");
@@ -16,10 +71,167 @@ function uploadWithProgress(url: string, apiKey: string, file: File, onProgress:
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
     };
-    xhr.onload = () => xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(xhr.responseText || `Storage upload failed (${xhr.status}).`));
-    xhr.onerror = () => reject(new Error("Network error. Check your connection and retry this file."));
-    xhr.onabort = () => reject(new Error("Upload cancelled."));
+    xhr.onload = () => {
+      finish();
+      if (heartbeatFailed) return reject(new Error("The session expired during upload. Please ask your teacher for a new QR code."));
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      else reject(new Error(xhr.responseText || `Storage upload failed (${xhr.status}).`));
+    };
+    xhr.onerror = () => { finish(); reject(new Error("Network error. Check your connection and retry this file.")); };
+    xhr.onabort = () => {
+      finish();
+      reject(new Error(heartbeatFailed
+        ? "The session expired during upload. Please ask your teacher for a new QR code."
+        : "Upload cancelled."));
+    };
     xhr.send(file);
+  });
+}
+
+
+
+async function uploadWithProgress(
+  primaryUrl: string,
+  fallbackUrl: string,
+  apiKey: string,
+  file: File,
+  token: string,
+  path: string,
+  onProgress: (n: number) => void,
+) {
+  const urls = [...new Set([primaryUrl, fallbackUrl])];
+  let lastError: unknown;
+
+  for (const [urlIndex, url] of urls.entries()) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await uploadWithProgressOnce(url, apiKey, file, token, path, onProgress);
+        return;
+      } catch (error) {
+        lastError = error;
+        if (attempt === 0) {
+          await new Promise((resolve) => window.setTimeout(resolve, 900));
+        }
+      }
+    }
+    // Try the project API hostname if the direct Storage hostname is
+    // unreachable from a mobile carrier or browser network.
+    if (urlIndex < urls.length - 1) {
+      onProgress(0);
+    }
+  }
+
+  const message = lastError instanceof Error ? lastError.message : "Unknown upload failure";
+  throw new Error(`Storage connection failed after retries: ${message}`);
+}
+
+async function uploadResumableWithProgress(
+  storageOrigin: string,
+  projectOrigin: string,
+  apiKey: string,
+  file: File,
+  token: string,
+  path: string,
+  bucket: string,
+  signedToken: string,
+  onProgress: (n: number) => void,
+) {
+  const firstHeartbeat = await fetch("/api/upload/heartbeat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token, path }),
+  });
+  if (!firstHeartbeat.ok) throw new Error("This session has expired. Please ask your teacher for a new QR code.");
+
+  const endpoints = [...new Set([
+    `${storageOrigin}/storage/v1/upload/resumable`,
+    `${projectOrigin}/storage/v1/upload/resumable`,
+  ])];
+
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    let heartbeatPending = false;
+    let heartbeatFailed = false;
+    let currentUpload: tus.Upload | null = null;
+    let endpointIndex = 0;
+    let lastError = "";
+
+    const finish = () => window.clearInterval(heartbeatTimer);
+
+    const startEndpoint = () => {
+      if (settled) return;
+      if (endpointIndex >= endpoints.length) {
+        settled = true;
+        finish();
+        reject(new Error(`Storage connection failed on both upload endpoints. ${lastError}`));
+        return;
+      }
+
+      const endpoint = endpoints[endpointIndex++];
+      currentUpload = new tus.Upload(file, {
+        endpoint,
+        retryDelays: [0, 2000, 5000, 10000, 20000, 30000],
+        headers: {
+          apikey: apiKey,
+          "x-signature": signedToken,
+          "x-upsert": "false",
+        },
+        metadata: {
+          bucketName: bucket,
+          objectName: path,
+          contentType: file.type || "application/octet-stream",
+          cacheControl: "3600",
+        },
+        uploadDataDuringCreation: true,
+        chunkSize: TUS_CHUNK_SIZE,
+        removeFingerprintOnSuccess: true,
+        storeFingerprintForResuming: false,
+        onError: (error) => {
+          if (settled) return;
+          lastError = error.message || "Network request failed";
+          // Retry the complete TUS handshake through the project API hostname
+          // when a mobile carrier cannot reach the direct Storage hostname.
+          startEndpoint();
+        },
+        onProgress: (bytesUploaded, bytesTotal) => {
+          if (bytesTotal > 0) onProgress(Math.round((bytesUploaded / bytesTotal) * 100));
+        },
+        onSuccess: () => {
+          if (settled) return;
+          settled = true;
+          finish();
+          onProgress(100);
+          resolve();
+        },
+      });
+      currentUpload.start();
+    };
+
+    const heartbeatTimer = window.setInterval(async () => {
+      if (heartbeatPending || settled) return;
+      heartbeatPending = true;
+      try {
+        const response = await fetch("/api/upload/heartbeat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token, path }),
+        });
+        if (!response.ok) heartbeatFailed = true;
+      } catch {
+        heartbeatFailed = true;
+      } finally {
+        heartbeatPending = false;
+      }
+
+      if (heartbeatFailed && !settled) {
+        settled = true;
+        finish();
+        void currentUpload?.abort().catch(() => undefined);
+        reject(new Error("The session expired during upload. Please ask your teacher for a new QR code."));
+      }
+    }, 45_000);
+
+    startEndpoint();
   });
 }
 
@@ -69,28 +281,148 @@ export default function StudentUpload({ token }: { token: string }) {
   }
 
   async function submit() {
-    if (!studentName.trim() || !studentId.trim()) { setMessage("Enter your name and student ID first."); return; }
+    
     if (!items.length) { setMessage("Choose at least one file to upload."); return; }
     if (!supabaseUrl || !anonKey) { setMessage("The upload service is not configured. Contact your teacher."); return; }
     setBusy(true); setMessage("");
     const pending = items.filter((item) => item.status !== "done");
-    for (const item of pending) {
-      updateItem(item.id, { status: "uploading", progress: 0, error: undefined });
+    let nextIndex = 0;
+
+    async function processItem(item: UploadItem) {
+      updateItem(item.id, { status: "uploading", progress: item.storageUploaded ? 100 : 0, error: undefined });
+      let uploadPath = item.uploadPath ?? "";
+      let storageUploaded = item.storageUploaded ?? false;
       try {
-        const initRes = await fetch("/api/upload/init", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token, filename: item.file.name, size: item.file.size, mimeType: item.file.type, batchSize: pending.length }) });
-        const init = await initRes.json();
-        if (!initRes.ok) throw new Error(init.error || "Could not prepare upload.");
-        setMaxFilesAllowed(init.maxFiles || 10);
-        const objectUrl = `${supabaseUrl.replace(/\/$/, "")}/storage/v1/object/upload/sign/${encodeURIComponent(init.bucket)}/${init.path.split("/").map(encodeURIComponent).join("/")}?token=${encodeURIComponent(init.signedToken)}`;
-        await uploadWithProgress(objectUrl, anonKey, item.file, (progress) => updateItem(item.id, { progress }));
-        const completeRes = await fetch("/api/upload/complete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token, path: init.path, filename: item.file.name, size: item.file.size, mimeType: item.file.type, studentName, studentId }) });
+        if (!storageUploaded || !uploadPath) {
+          const initRes = await fetch("/api/upload/init", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              token,
+              filename: item.file.name,
+              size: item.file.size,
+              mimeType: item.file.type,
+              batchSize: pending.length,
+            }),
+          });
+          const init = await initRes.json();
+          if (!initRes.ok) throw new Error(init.error || "Could not prepare upload.");
+          setMaxFilesAllowed(init.maxFiles || 10);
+          uploadPath = init.path;
+          updateItem(item.id, { uploadPath, storageUploaded: false });
+
+          const storageOrigin = getStorageOrigin(supabaseUrl);
+          if (item.file.size > RESUMABLE_THRESHOLD) {
+            await uploadResumableWithProgress(
+              storageOrigin,
+              getProjectOrigin(supabaseUrl),
+              anonKey,
+              item.file,
+              token,
+              init.path,
+              init.bucket,
+              init.signedToken,
+              (progress) => updateItem(item.id, { progress }),
+            );
+          } else {
+            const signedPath = `/storage/v1/object/upload/sign/${encodeURIComponent(init.bucket)}/${init.path.split("/").map(encodeURIComponent).join("/")}?token=${encodeURIComponent(init.signedToken)}`;
+            // Prefer the regular project API host for small files; fall back
+            // to the direct Storage host if the mobile network cannot reach it.
+            const projectUploadUrl = `${getProjectOrigin(supabaseUrl)}${signedPath}`;
+            const directStorageUploadUrl = `${storageOrigin}${signedPath}`;
+            await uploadWithProgress(
+              projectUploadUrl,
+              directStorageUploadUrl,
+              anonKey,
+              item.file,
+              token,
+              init.path,
+              (progress) => updateItem(item.id, { progress }),
+            );
+          }
+          storageUploaded = true;
+          updateItem(item.id, { progress: 100, storageUploaded: true });
+        }
+
+        // Completion is retryable without uploading the file a second time.
+        const completeRes = await fetch("/api/upload/complete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            token,
+            path: uploadPath,
+            filename: item.file.name,
+            size: item.file.size,
+            mimeType: item.file.type,
+            studentName,
+            studentId,
+          }),
+        });
         const complete = await completeRes.json();
         if (!completeRes.ok) throw new Error(complete.error || "Could not confirm submission.");
-        updateItem(item.id, { status: "done", progress: 100 });
+        updateItem(item.id, { status: "done", progress: 100, uploadPath, storageUploaded: true });
       } catch (err) {
-        updateItem(item.id, { status: "error", error: err instanceof Error ? err.message : "Upload failed." });
+        // A browser can lose the Storage response after the object was
+        // accepted. Verify with our server before calling the upload failed.
+        if (uploadPath && !storageUploaded) {
+          try {
+            const verifyRes = await fetch("/api/upload/complete", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                token,
+                path: uploadPath,
+                filename: item.file.name,
+                size: item.file.size,
+                mimeType: item.file.type,
+                studentName,
+                studentId,
+              }),
+            });
+            const verify = await verifyRes.json().catch(() => ({}));
+            if (verifyRes.ok) {
+              updateItem(item.id, {
+                status: "done",
+                progress: 100,
+                uploadPath,
+                storageUploaded: true,
+                error: undefined,
+              });
+              return;
+            }
+
+            // Only mark the intent failed when the server definitively says
+            // the object does not exist. Retain it for cleanup on transient 5xx/network errors.
+            if (verifyRes.status === 400 && String(verify.error || "").toLowerCase().includes("not be found")) {
+              await fetch("/api/upload/fail", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ token, path: uploadPath }),
+              }).catch(() => undefined);
+            }
+          } catch {
+            // Keep the intent tracked; the cleanup worker can safely remove it
+            // after its inactivity window if the object never becomes visible.
+          }
+        }
+        updateItem(item.id, {
+          status: "error",
+          uploadPath: storageUploaded ? uploadPath : undefined,
+          storageUploaded,
+          error: err instanceof Error ? err.message : "Upload failed.",
+        });
       }
     }
+
+    // Two simultaneous transfers reduce waiting for a batch without saturating
+    // a typical mobile connection or causing too many concurrent Storage writes.
+    const workerCount = Math.min(2, pending.length);
+    await Promise.all(Array.from({ length: workerCount }, async () => {
+      while (nextIndex < pending.length) {
+        const item = pending[nextIndex++];
+        await processItem(item);
+      }
+    }));
     setBusy(false);
     setMessage("Upload process finished. Check each file's status below.");
   }
@@ -103,12 +435,12 @@ export default function StudentUpload({ token }: { token: string }) {
         <h1>{sessionTitle}</h1>
         <p>Enter your details, choose your files, and submit them to your teacher. Keep this page open until uploads finish.</p>
         {closed ? <div className="empty"><AlertCircle size={26}/><p>This session is closed and is no longer accepting submissions.</p></div> : <>
-          <div className="field"><label htmlFor="student-name">YOUR NAME</label><input id="student-name" value={studentName} onChange={(e) => setStudentName(e.target.value)} placeholder="Enter your full name" disabled={busy}/></div>
-          <div className="field"><label htmlFor="student-id">STUDENT ID</label><input id="student-id" value={studentId} onChange={(e) => setStudentId(e.target.value)} placeholder="Enter your student ID" disabled={busy}/></div>
+          <div className="field"><label htmlFor="student-name">YOUR NAME (OPTIONAL)</label><input id="student-name" value={studentName} onChange={(e) => setStudentName(e.target.value)} placeholder="Enter your name (optional)" disabled={busy}/></div>
+          <div className="field"><label htmlFor="student-id">STUDENT ID (OPTIONAL)</label><input id="student-id" value={studentId} onChange={(e) => setStudentId(e.target.value)} placeholder="Enter your student ID (optional)" disabled={busy}/></div>
           <div className="dropzone">
             <UploadCloud size={30} color="#71934f"/>
             <p style={{ fontWeight: 700, fontSize: 13, margin: "9px 0 5px" }}>Choose files to submit</p>
-            <p className="small muted">Select up to {maxFilesAllowed} files. Maximum 50 MB per file.</p>
+            <p className="small muted">Select up to {maxFilesAllowed} files. Maximum 50 MB per file. Name and ID are optional.</p>
             <input ref={inputRef} type="file" multiple onChange={(e) => addFiles(e.target.files)} disabled={busy}/>
           </div>
           {items.length > 0 && <div style={{ margin: "18px 0" }}>

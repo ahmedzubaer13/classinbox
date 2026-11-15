@@ -1,39 +1,37 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
-import type { NextRequest } from "next/server";
+import { createHmac, createHash, randomBytes } from "node:crypto";
+import type { NextRequest, NextResponse } from "next/server";
 
-const COOKIE_NAME = "classinbox_teacher";
-const MAX_AGE_SECONDS = 60 * 60 * 12;
+const COOKIE_NAME = "classinbox_creator";
+const MAX_AGE_SECONDS = 60 * 60 * 24 * 365;
 
-function secret() {
-  const value = process.env.TEACHER_SESSION_SECRET;
-  if (!value || value.length < 32) throw new Error("TEACHER_SESSION_SECRET must be at least 32 characters.");
-  return value;
+export function readCreatorSecret(request: NextRequest) {
+  const value = request.cookies.get(COOKIE_NAME)?.value;
+  return value && /^[A-Za-z0-9_-]{40,64}$/.test(value) ? value : null;
 }
 
-function signature(payload: string) {
-  return createHmac("sha256", secret()).update(payload).digest("hex");
+export function newCreatorSecret() {
+  return randomBytes(32).toString("base64url");
 }
 
-export function createTeacherCookieValue() {
-  const expires = Math.floor(Date.now() / 1000) + MAX_AGE_SECONDS;
-  const payload = String(expires);
-  return `${payload}.${signature(payload)}`;
+export function creatorIdHash(creatorSecret: string) {
+  return createHash("sha256").update(creatorSecret).digest("hex");
 }
 
-export function isTeacherRequest(request: NextRequest) {
-  try {
-    const value = request.cookies.get(COOKIE_NAME)?.value;
-    if (!value) return false;
-    const [expires, supplied] = value.split(".");
-    if (!expires || !supplied || Number(expires) < Math.floor(Date.now() / 1000)) return false;
-    const expected = signature(expires);
-    const a = Buffer.from(supplied);
-    const b = Buffer.from(expected);
-    return a.length === b.length && timingSafeEqual(a, b);
-  } catch {
-    return false;
-  }
+export function ownerHashForSession(creatorSecret: string, sessionId: string) {
+  return createHmac("sha256", creatorSecret)
+    .update(`classinbox-session-owner:${sessionId}`)
+    .digest("hex");
 }
 
-export const teacherCookieName = COOKIE_NAME;
-export const teacherCookieMaxAge = MAX_AGE_SECONDS;
+export function setCreatorCookie(response: NextResponse, creatorSecret: string) {
+  response.cookies.set(COOKIE_NAME, creatorSecret, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+    path: "/",
+    maxAge: MAX_AGE_SECONDS,
+  });
+}
+
+export const creatorCookieName = COOKIE_NAME;
+export const creatorCookieMaxAge = MAX_AGE_SECONDS;
